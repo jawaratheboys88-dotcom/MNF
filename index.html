@@ -1,0 +1,1438 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aplikasi Keuangan Musholla Real-time</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Firebase CDN Imports (Menggunakan v10.5.2) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.5.2/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.5.2/firebase-auth.js";
+    import { getFirestore, collection, onSnapshot, addDoc, doc, deleteDoc, setLogLevel, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.5.2/firebase-firestore.js";
+
+    // PENTING: Variabel global dari lingkungan Canvas
+    const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+    let app, auth, db;
+    let resolveFirebaseReady;
+    const firebaseReadyPromise = new Promise(resolve => { resolveFirebaseReady = resolve; });
+
+    // Inisialisasi Firebase
+    if (Object.keys(firebaseConfig).length > 0) {
+        setLogLevel('Debug');
+        app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        auth = getAuth(app);
+        
+        // Fungsi Autentikasi
+        const authenticate = async () => {
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                console.log("Firebase Auth successful. User ID:", auth.currentUser.uid);
+            } catch (error) {
+                console.error("Firebase Auth failed:", error);
+            }
+            resolveFirebaseReady();
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (!user) {
+                authenticate();
+            } else {
+                resolveFirebaseReady();
+            }
+        });
+    } else {
+        db = null;
+        console.warn("Firebase config not found. Running in Local Storage mode fallback.");
+        resolveFirebaseReady();
+    }
+
+    // Ekspor instance ke window agar dapat diakses oleh kode React/Babel
+    window.firebaseUtils = {
+        db,
+        auth,
+        appId: appId,
+        firebaseReadyPromise,
+        getFirestore: () => db,
+        getAuth: () => auth,
+        collection,
+        onSnapshot,
+        addDoc,
+        doc,
+        deleteDoc,
+        setDoc,
+        getDoc
+    };
+  </script>
+  
+  <!-- React & ReactDOM dari CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- Babel supaya JSX bisa jalan -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+      body {
+          font-family: 'Inter', sans-serif;
+          margin: 0;
+          padding: 0;
+      }
+      /* Custom print style for better report output */
+      @media print {
+        @page { margin: 1cm; }
+        body { margin: 0; }
+        .no-print { display: none !important; }
+      }
+      /* Menambahkan scrollbar pada tabel agar bisa dilihat di perangkat kecil */
+      .table-container {
+        max-height: 70vh;
+        overflow-y: auto;
+      }
+      .logo-display {
+          width: 80px;
+          height: 80px;
+          object-fit: contain;
+          border-radius: 10px;
+      }
+      /* Style untuk memastikan gambar logo dimuat dengan baik di header print */
+      .print-logo {
+          max-width: 100px;
+          max-height: 100px;
+          display: block;
+          margin: 0 auto 10px auto;
+          object-fit: contain;
+      }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    // --- Placeholder Components for Icons (Lucide Icons) ---
+    const IconWrapper = ({ children, className = "w-5 h-5" }) => (<svg xmlns="http://www.w3.org/2000/svg" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{children}</svg>);
+    const Home = (props) => (<IconWrapper {...props}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></IconWrapper>);
+    const Plus = (props) => (<IconWrapper {...props}><path d="M5 12h14M12 5v14"/></IconWrapper>);
+    const Trash2 = (props) => (<IconWrapper {...props}><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></IconWrapper>);
+    const TrendingUp = (props) => (<IconWrapper {...props}><polyline points="22 7 13 16 9 12 2 19"/><path d="M16 7h6v6"/></IconWrapper>);
+    const TrendingDown = (props) => (<IconWrapper {...props}><polyline points="22 17 13 8 9 12 2 5"/><path d="M16 17h6v-6"/></IconWrapper>);
+    const Calendar = (props) => (<IconWrapper {...props}><rect width="18" height="18" x="3" y="4" rx="2" ry="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/></IconWrapper>);
+    const DollarSign = (props) => (<IconWrapper {...props}><line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></IconWrapper>);
+    const FileText = (props) => (<IconWrapper {...props}><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></IconWrapper>);
+    const LogOut = (props) => (<IconWrapper {...props}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></IconWrapper>);
+    const Lock = (props) => (<IconWrapper {...props}><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></IconWrapper>);
+    const User = (props) => (<IconWrapper {...props}><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></IconWrapper>);
+    const Download = (props) => (<IconWrapper {...props}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></IconWrapper>);
+    const Upload = (props) => (<IconWrapper {...props}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></IconWrapper>);
+    const Printer = (props) => (<IconWrapper {...props}><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8" rx="2" ry="2"/></IconWrapper>);
+    const FileDown = (props) => (<IconWrapper {...props}><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M12 13v6"/><path d="m15 16-3 3-3-3"/></IconWrapper>);
+    const Settings = (props) => (<IconWrapper {...props}><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></IconWrapper>);
+
+    // --- End of Placeholder Components ---
+
+    // --- FUNGSI LOCAL STORAGE (PERSISTENCE OFFLINE) ---
+    const LS_TRANSACTIONS_KEY = 'musholla_finance_data_v2';
+    const LS_SETTINGS_KEY = 'musholla_finance_settings_v2'; // Diperbarui untuk fitur Base64
+    
+    const loadFromLocalStorage = (key) => {
+        try {
+            const data = localStorage.getItem(key);
+            return data ? JSON.parse(data) : null;
+        } catch (e) {
+            console.error("Error loading from local storage", e);
+            return null;
+        }
+    };
+
+    const saveToLocalStorage = (key, data) => {
+        try {
+            localStorage.setItem(key, JSON.stringify(data));
+        } catch (e) {
+            console.error("Error saving to local storage", e);
+        }
+    };
+    // --- AKHIR FUNGSI LOCAL STORAGE ---
+
+    const defaultSettings = {
+        name: 'Musholla Nurul Falah',
+        address: 'Jl. Contoh Raya No. 12, Jakarta',
+        // Placeholder logo now, will be replaced by Base64 data if uploaded
+        logoUrl: 'https://placehold.co/80x80/10b981/ffffff?text=LOGO', 
+    };
+
+    const FinanceApp = () => {
+      const firebaseUtils = window.firebaseUtils || {};
+      const { 
+          db, 
+          appId, 
+          firebaseReadyPromise, 
+          collection, 
+          onSnapshot, 
+          addDoc, 
+          doc, 
+          deleteDoc,
+          setDoc,
+          getDoc
+      } = firebaseUtils;
+
+      const [isAuthReady, setIsAuthReady] = useState(false);
+      const [transactions, setTransactions] = useState([]);
+      const [settings, setSettings] = useState(defaultSettings);
+      const [isLoading, setIsLoading] = useState(true);
+      const [isOnline, setIsOnline] = useState(false); // Status koneksi ke Firestore
+
+      // Pengguna Dummy untuk Login
+      const users = [
+        { username: 'admin', password: 'admin2025', role: 'admin', name: 'Administrator' },
+        { username: 'user', password: 'user123', role: 'user', name: 'Pengurus Musholla' }
+      ];
+
+      const [currentUser, setCurrentUser] = useState(null);
+      const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+      const [loginError, setLoginError] = useState('');
+      
+      const [formData, setFormData] = useState({
+        date: '',
+        type: 'pemasukan',
+        category: '',
+        amount: '',
+        description: ''
+      });
+
+      const [settingsForm, setSettingsForm] = useState(defaultSettings);
+      const [filter, setFilter] = useState({ month: '', year: new Date().getFullYear().toString() });
+      const [activeTab, setActiveTab] = useState('input');
+      const [modalMessage, setModalMessage] = useState({ show: false, text: '', isError: false });
+
+      const categories = {
+        pemasukan: ['Infaq Jumat', 'Donasi', 'Sumbangan', 'Infaq Harian', 'Lainnya'],
+        pengeluaran: ['Listrik & Air', 'Kebersihan', 'Renovasi', 'Perlengkapan', 'Gaji Pengurus', 'Lainnya']
+      };
+
+      const showMessage = (text, isError = false) => {
+        setModalMessage({ show: true, text, isError });
+        setTimeout(() => setModalMessage({ show: false, text: '', isError: false }), 3000);
+      };
+
+      // Fungsi untuk mengurutkan transaksi berdasarkan tanggal terbaru
+      const sortTransactions = (data) => data.sort((a, b) => new Date(b.date) - new Date(a.date));
+      
+      // --- LOGIKA UPLOAD BASE64 LOGO ---
+      const handleLogoUpload = (event) => {
+          const file = event.target.files[0];
+          if (!file) return;
+
+          // Batas aman untuk dokumen Firestore (1MB)
+          const MAX_FILE_SIZE = 500 * 1024; // 500 KB
+          
+          if (file.size > MAX_FILE_SIZE) { 
+              showMessage('Ukuran gambar terlalu besar! Maksimum 500KB. Gunakan gambar beresolusi rendah.', true);
+              event.target.value = null; // Clear the input
+              return;
+          }
+
+          const reader = new FileReader();
+          reader.onloadend = () => {
+              // Simpan sebagai Base64 data URL
+              setSettingsForm({...settingsForm, logoUrl: reader.result});
+              showMessage('Gambar logo berhasil dimuat. Jangan lupa Simpan Pengaturan!');
+          };
+          reader.onerror = () => {
+               showMessage('Gagal memuat file.', true);
+          };
+          reader.readAsDataURL(file);
+      };
+
+      // --- FIRESTORE / LOCAL STORAGE INTEGRATION ---
+      useEffect(() => {
+          if (firebaseReadyPromise) {
+              firebaseReadyPromise.then(() => {
+                  setIsAuthReady(true);
+                  setIsLoading(false);
+                  
+                  if (db) {
+                    setIsOnline(true);
+                    
+                    // 1. Dengar Transaksi
+                    const transactionCollectionPath = ['artifacts', appId, 'public', 'data', 'musholla_transactions'];
+                    const transactionCollectionRef = collection(db, ...transactionCollectionPath);
+                    
+                    const unsubscribeTransactions = onSnapshot(transactionCollectionRef, (snapshot) => {
+                        const fetchedTransactions = snapshot.docs.map(doc => ({
+                            id: doc.id,
+                            ...doc.data()
+                        }));
+                        setTransactions(sortTransactions(fetchedTransactions));
+                    }, (error) => {
+                        console.error("Error fetching transactions from Firestore:", error);
+                        // Fallback ke Local Storage jika koneksi error
+                        setIsOnline(false);
+                        const storedData = loadFromLocalStorage(LS_TRANSACTIONS_KEY) || [];
+                        setTransactions(sortTransactions(storedData));
+                        showMessage("Gagal terhubung ke Firestore. Beralih ke Mode Offline Lokal.", true);
+                    });
+
+                    // 2. Dengar Pengaturan (Settings)
+                    const settingsDocPath = ['artifacts', appId, 'public', 'data', 'musholla_settings', 'config'];
+                    const settingsDocRef = doc(db, ...settingsDocPath);
+                    
+                    const unsubscribeSettings = onSnapshot(settingsDocRef, (docSnap) => {
+                        if (docSnap.exists()) {
+                            const newSettings = {...defaultSettings, ...docSnap.data()};
+                            setSettings(newSettings);
+                            setSettingsForm(newSettings); // Update form state too
+                        } else {
+                            // Simpan default jika belum ada
+                            setDoc(settingsDocRef, defaultSettings, { merge: true });
+                            setSettings(defaultSettings);
+                            setSettingsForm(defaultSettings);
+                        }
+                    }, (error) => {
+                        console.error("Error fetching settings from Firestore:", error);
+                    });
+
+                    return () => {
+                        unsubscribeTransactions();
+                        unsubscribeSettings();
+                    };
+                  } else {
+                    // MODE OFFLINE: LOCAL STORAGE
+                    setIsOnline(false);
+                    const storedData = loadFromLocalStorage(LS_TRANSACTIONS_KEY) || [];
+                    setTransactions(sortTransactions(storedData));
+                    
+                    const storedSettings = loadFromLocalStorage(LS_SETTINGS_KEY) || defaultSettings;
+                    setSettings(storedSettings);
+                    setSettingsForm(storedSettings);
+                    
+                    showMessage("Mode Offline Aktif. Database Firestore tidak tersedia.", true);
+                  }
+              });
+          } else {
+             setIsAuthReady(true);
+             setIsLoading(false);
+          }
+
+          setFilter(f => ({...f, year: new Date().getFullYear().toString()}));
+      }, [isAuthReady, firebaseReadyPromise]);
+
+      // --- LOGIKA PENYIMPANAN PENGATURAN (Settings) ---
+      const handleSaveSettings = async (e) => {
+          e.preventDefault();
+          
+          if (!settingsForm.name || !settingsForm.address || !settingsForm.logoUrl) {
+              showMessage('Mohon lengkapi semua bidang pengaturan!', true);
+              return;
+          }
+
+          try {
+              if (isOnline) {
+                  // SIMPAN KE FIRESTORE (ONLINE)
+                  if (!isAuthReady || !db) { throw new Error('Firestore not ready'); }
+                  const settingsDocPath = ['artifacts', appId, 'public', 'data', 'musholla_settings', 'config'];
+                  const settingsDocRef = doc(db, ...settingsDocPath);
+                  await setDoc(settingsDocRef, settingsForm, { merge: true });
+                  showMessage('Pengaturan berhasil disimpan ke Firestore!');
+              } else {
+                  // SIMPAN KE LOCAL STORAGE (OFFLINE)
+                  setSettings(settingsForm);
+                  saveToLocalStorage(LS_SETTINGS_KEY, settingsForm);
+                  showMessage('Pengaturan berhasil disimpan secara lokal (Offline Mode).');
+              }
+          } catch (error) {
+              console.error("Error saving settings: ", error);
+              showMessage('Gagal menyimpan pengaturan.', true);
+          }
+      };
+
+
+      // --- LOGIKA OTENTIKASI (LOGIN DUMMY) ---
+      const handleLogin = (e) => {
+        e.preventDefault();
+        const user = users.find(u => u.username === loginForm.username && u.password === loginForm.password);
+        
+        if (user) {
+          setCurrentUser(user);
+          setLoginError('');
+          setLoginForm({ username: '', password: '' });
+          showMessage(`Selamat datang, ${user.name}!`);
+        } else {
+          setLoginError('Username atau password salah!');
+        }
+      };
+
+      const handleLogout = () => {
+        setCurrentUser(null);
+        setActiveTab('input');
+        showMessage('Anda telah logout.');
+      };
+
+      // --- LOGIKA SUBMIT DATA TRANSAKSI ---
+      const handleSubmit = async (e) => {
+        e.preventDefault();
+
+        if (!formData.date || !formData.category || !formData.amount || parseFloat(formData.amount) <= 0) {
+          showMessage('Mohon lengkapi semua data yang diperlukan dengan benar!', true);
+          return;
+        }
+
+        const newTransaction = {
+            date: formData.date,
+            type: formData.type,
+            category: formData.category,
+            amount: parseFloat(formData.amount),
+            description: formData.description || '',
+            createdAt: new Date().toISOString()
+        };
+
+        try {
+            if (isOnline) {
+                if (!isAuthReady || !db) { throw new Error('Firestore not ready'); }
+                const collectionPath = ['artifacts', appId, 'public', 'data', 'musholla_transactions'];
+                await addDoc(collection(db, ...collectionPath), newTransaction);
+                showMessage('Data berhasil ditambahkan ke Firestore (Online)!');
+            } else {
+                const newId = crypto.randomUUID();
+                const newTransactionWithId = {...newTransaction, id: newId};
+                const updatedTransactions = [...transactions, newTransactionWithId];
+                setTransactions(sortTransactions(updatedTransactions));
+                saveToLocalStorage(LS_TRANSACTIONS_KEY, updatedTransactions);
+                showMessage('Data berhasil ditambahkan secara lokal (Offline Mode).');
+            }
+
+            setFormData({ date: '', type: 'pemasukan', category: '', amount: '', description: '' });
+        } catch (error) {
+            console.error("Error submitting document: ", error);
+            showMessage('Gagal menyimpan data ke server. Cek koneksi atau mode offline Anda.', true);
+        }
+      };
+
+      // --- LOGIKA HAPUS DATA ---
+      const handleDelete = async (id) => {
+        if (!window.confirm('Apakah Anda yakin ingin menghapus transaksi ini secara permanen?')) {
+            return;
+        }
+
+          try {
+              if (isOnline) {
+                  if (!isAuthReady || !db) { throw new Error('Firestore not ready'); }
+                  const documentPath = ['artifacts', appId, 'public', 'data', 'musholla_transactions', id];
+                  await deleteDoc(doc(db, ...documentPath));
+                  showMessage('Transaksi berhasil dihapus dari Firestore.');
+              } else {
+                  const updatedTransactions = transactions.filter(t => t.id !== id);
+                  setTransactions(sortTransactions(updatedTransactions));
+                  saveToLocalStorage(LS_TRANSACTIONS_KEY, updatedTransactions);
+                  showMessage('Transaksi berhasil dihapus secara lokal (Offline Mode).');
+              }
+          } catch (error) {
+            console.error("Error deleting document: ", error);
+            showMessage('Gagal menghapus data.', true);
+          }
+      };
+      
+      // --- Data Filtering & Summary ---
+
+      const filteredTransactions = useMemo(() => {
+        return transactions.filter(t => {
+          const tDate = new Date(t.date);
+          const matchYear = !filter.year || tDate.getFullYear().toString() === filter.year;
+          const matchMonth = !filter.month || (tDate.getMonth() + 1).toString() === filter.month;
+          return matchYear && matchMonth;
+        });
+      }, [transactions, filter]);
+
+      const summary = useMemo(() => {
+        const income = filteredTransactions
+          .filter(t => t.type === 'pemasukan')
+          .reduce((sum, t) => sum + t.amount, 0);
+        const expense = filteredTransactions
+          .filter(t => t.type === 'pengeluaran')
+          .reduce((sum, t) => sum + t.amount, 0);
+        return { income, expense, balance: income - expense };
+      }, [filteredTransactions]);
+
+      const allYears = useMemo(() => {
+          const years = new Set(transactions.map(t => new Date(t.date).getFullYear().toString()).filter(y => y !== 'NaN'));
+          const currentYear = new Date().getFullYear().toString();
+          years.add(currentYear);
+          return Array.from(years).sort((a, b) => parseInt(b) - parseInt(a));
+      }, [transactions]);
+
+      const monthlySummary = useMemo(() => {
+        const yearData = transactions.filter(t => 
+          new Date(t.date).getFullYear().toString() === filter.year
+        );
+
+        const months = Array.from({ length: 12 }, (_, i) => {
+          const monthTrans = yearData.filter(t => 
+            new Date(t.date).getMonth() === i
+          );
+          const income = monthTrans.filter(t => t.type === 'pemasukan').reduce((s, t) => s + t.amount, 0);
+          const expense = monthTrans.filter(t => t.type === 'pengeluaran').reduce((s, t) => s + t.amount, 0);
+          return { month: i + 1, income, expense, balance: income - expense };
+        });
+
+        return months;
+      }, [transactions, filter.year]);
+
+      // --- UTILITY FORMATTING ---
+      const formatCurrency = (amount) => {
+        return new Intl.NumberFormat('id-ID', {
+          style: 'currency',
+          currency: 'IDR',
+          minimumFractionDigits: 0
+        }).format(amount);
+      };
+
+      const monthNames = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 
+                          'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+
+      // --- EXPORT & IMPORT (Data Transaksi) ---
+      const handleExportData = () => {
+          const dataToExport = {
+              transactions: transactions,
+              settings: settings,
+              exportTime: new Date().toISOString()
+          };
+          const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(dataToExport, null, 2));
+          const downloadAnchorNode = document.createElement('a');
+          downloadAnchorNode.setAttribute("href", dataStr);
+          downloadAnchorNode.setAttribute("download", `musholla_backup_${new Date().toISOString().split('T')[0]}.json`);
+          document.body.appendChild(downloadAnchorNode);
+          downloadAnchorNode.click();
+          downloadAnchorNode.remove();
+          showMessage('Data berhasil di-backup (JSON).');
+      };
+      
+      const handleImportData = (event) => {
+          const file = event.target.files[0];
+          if (!file) return;
+
+          const reader = new FileReader();
+          reader.onload = async (e) => {
+              try {
+                  const importedData = JSON.parse(e.target.result);
+                  const importedTransactions = importedData.transactions || [];
+                  const importedSettings = importedData.settings || defaultSettings;
+
+                  if (importedTransactions.length === 0) {
+                      showMessage("File JSON tidak mengandung data transaksi yang valid.", true);
+                      return;
+                  }
+
+                  // Proses import ke Firestore atau Local Storage
+                  if (isOnline) {
+                      if (!window.confirm(`Yakin ingin menimpa ${transactions.length} data transaksi dan pengaturan dengan ${importedTransactions.length} data dari file? (TIDAK ADA UNDO)`)) {
+                          return;
+                      }
+                      
+                      const collectionPath = ['artifacts', appId, 'public', 'data', 'musholla_transactions'];
+                      const settingsDocPath = ['artifacts', appId, 'public', 'data', 'musholla_settings', 'config'];
+                      
+                      // 1. Hapus semua data lama (atau lakukan batch write yang lebih kompleks)
+                      // Untuk kesederhanaan, asumsikan user ingin menimpa total data.
+                      const existingDocs = await firebaseUtils.getDocs(firebaseUtils.collection(db, ...collectionPath));
+                      const deletePromises = existingDocs.docs.map(d => firebaseUtils.deleteDoc(firebaseUtils.doc(db, ...collectionPath, d.id)));
+                      await Promise.all(deletePromises);
+
+                      // 2. Tambahkan data baru
+                      const addPromises = importedTransactions.map(t => {
+                          // Hapus ID lama jika ada, biarkan Firestore generate baru
+                          const { id, ...dataToSave } = t; 
+                          return firebaseUtils.addDoc(firebaseUtils.collection(db, ...collectionPath), dataToSave);
+                      });
+                      await Promise.all(addPromises);
+                      
+                      // 3. Simpan pengaturan
+                      await firebaseUtils.setDoc(firebaseUtils.doc(db, ...settingsDocPath), importedSettings);
+
+                      showMessage(`Berhasil mengimpor ${importedTransactions.length} transaksi dan pengaturan ke Firestore!`);
+
+                  } else {
+                      if (!window.confirm(`Yakin ingin menimpa ${transactions.length} data lokal dan pengaturan dengan ${importedTransactions.length} data dari file? (TIDAK ADA UNDO)`)) {
+                          return;
+                      }
+                      saveToLocalStorage(LS_TRANSACTIONS_KEY, importedTransactions);
+                      saveToLocalStorage(LS_SETTINGS_KEY, importedSettings);
+                      setTransactions(sortTransactions(importedTransactions));
+                      setSettings(importedSettings);
+                      setSettingsForm(importedSettings);
+                      showMessage(`Berhasil mengimpor ${importedTransactions.length} transaksi dan pengaturan secara lokal.`);
+                  }
+              } catch (error) {
+                  console.error("Import error:", error);
+                  showMessage('Gagal mengimpor data. Pastikan file JSON valid.', true);
+              }
+              // Reset file input
+              event.target.value = null; 
+          };
+          reader.readAsText(file);
+      };
+
+      // --- PRINT LOGIC (Diperbarui untuk Logo & Alamat) ---
+      const handlePrint = (type) => {
+        const printWindow = window.open('', '_blank');
+        const content = generatePrintContent(type);
+        
+        printWindow.document.write(content);
+        printWindow.document.close();
+        printWindow.focus();
+        setTimeout(() => {
+          try {
+            printWindow.print();
+          } catch (e) {
+            console.error("Printing failed:", e);
+          }
+        }, 500);
+      };
+
+      const generatePrintContent = (type) => {
+          const monthName = filter.month ? monthNames[parseInt(filter.month) - 1] : 'Semua Bulan';
+          const yearName = filter.year || new Date().getFullYear().toString();
+          
+          let tableRows = '';
+          let title = '';
+          let totalIncome = 0;
+          let totalExpense = 0;
+          
+          const dataToPrint = type === 'monthly' ? filteredTransactions : monthlySummary;
+          
+          if (type === 'monthly') {
+            title = `Laporan Keuangan Bulanan - ${monthName} ${yearName}`;
+            dataToPrint.forEach((t, idx) => {
+              const income = t.type === 'pemasukan' ? t.amount : 0;
+              const expense = t.type === 'pengeluaran' ? t.amount : 0;
+              totalIncome += income;
+              totalExpense += expense;
+              
+              tableRows += `
+                <tr style="background-color: ${idx % 2 === 0 ? '#f9fafb' : 'white'}">
+                  <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: center;">${idx + 1}</td>
+                  <td style="padding: 12px; border: 1px solid #e5e7eb;">${new Date(t.date).toLocaleDateString('id-ID')}</td>
+                  <td style="padding: 12px; border: 1px solid #e5e7eb;">${t.type === 'pemasukan' ? 'Pemasukan' : 'Pengeluaran'}</td>
+                  <td style="padding: 12px; border: 1px solid #e5e7eb;">${t.category}</td>
+                  <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right;">${formatCurrency(income)}</td>
+                  <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right;">${formatCurrency(expense)}</td>
+                  <td style="padding: 12px; border: 1px solid #e5e7eb;">${t.description}</td>
+                </tr>
+              `;
+            });
+            
+            tableRows += `
+              <tr style="background-color: #d1fae5; font-weight: bold;">
+                <td colspan="4" style="padding: 12px; border: 1px solid #e5e7eb; text-align: center;">TOTAL</td>
+                <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; color: #059669;">${formatCurrency(totalIncome)}</td>
+                <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; color: #dc2626;">${formatCurrency(totalExpense)}</td>
+                <td style="padding: 12px; border: 1px solid #e5e7eb;"></td>
+              </tr>
+              <tr style="background-color: #bfdbfe; font-weight: bold;">
+                <td colspan="4" style="padding: 12px; border: 1px solid #e5e7eb; text-align: center;">SALDO</td>
+                <td colspan="3" style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; color: #1e40af;">${formatCurrency(totalIncome - totalExpense)}</td>
+              </tr>
+            `;
+            
+          } else if (type === 'yearly') {
+            title = `Laporan Keuangan Tahunan - ${yearName}`;
+            dataToPrint.forEach((m, idx) => {
+              totalIncome += m.income;
+              totalExpense += m.expense;
+              
+              tableRows += `
+                <tr style="background-color: ${idx % 2 === 0 ? '#f9fafb' : 'white'}">
+                  <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: center;">${idx + 1}</td>
+                  <td style="padding: 12px; border: 1px solid #e5e7eb;">${monthNames[m.month - 1]}</td>
+                  <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; color: #059669;">${formatCurrency(m.income)}</td>
+                  <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; color: #dc2626;">${formatCurrency(m.expense)}</td>
+                  <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; font-weight: bold; color: ${m.balance >= 0 ? '#059669' : '#dc2626'};">${formatCurrency(m.balance)}</td>
+                </tr>
+              `;
+            });
+            
+            tableRows += `
+              <tr style="background-color: #d1fae5; font-weight: bold;">
+                <td colspan="2" style="padding: 12px; border: 1px solid #e5e7eb; text-align: center;">TOTAL</td>
+                <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; color: #059669;">${formatCurrency(totalIncome)}</td>
+                <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; color: #dc2626;">${formatCurrency(totalExpense)}</td>
+                <td style="padding: 12px; border: 1px solid #e5e7eb; text-align: right; color: #1e40af;">${formatCurrency(totalIncome - totalExpense)}</td>
+              </tr>
+            `;
+          }
+          
+          const tableHeader = type === 'monthly' 
+            ? `<tr style="background-color: #10b981; color: white;">
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">No</th>
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">Tanggal</th>
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">Jenis</th>
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">Kategori</th>
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">Pemasukan</th>
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">Pengeluaran</th>
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">Keterangan</th>
+              </tr>`
+            : `<tr style="background-color: #10b981; color: white;">
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">No</th>
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">Bulan</th>
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">Pemasukan</th>
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">Pengeluaran</th>
+                <th style="padding: 12px; border: 1px solid #e5e7eb;">Saldo</th>
+              </tr>`;
+          
+          return `
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="UTF-8">
+              <title>${title}</title>
+              <style>
+                @media print { @page { margin: 1cm; } body { margin: 0; } }
+                body { font-family: Arial, sans-serif; padding: 20px; background: white; }
+                .header { text-align: center; margin-bottom: 30px; border-bottom: 3px solid #10b981; padding-bottom: 20px; }
+                /* Menggunakan properti object-fit: contain untuk Base64 image */
+                .header img { max-width: 100px; max-height: 100px; display: block; margin: 0 auto 10px auto; object-fit: contain; } 
+                .header h1 { margin: 0; color: #1f2937; font-size: 24px; }
+                .header p { margin: 5px 0 0 0; color: #4b5563; font-size: 14px; }
+                .header h2 { margin: 10px 0 0 0; color: #059669; font-size: 18px; }
+                .info { margin-bottom: 20px; font-size: 14px; color: #4b5563; }
+                table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+                th, td { border: 1px solid #e5e7eb; }
+                .footer { margin-top: 40px; padding-top: 20px; border-top: 2px solid #e5e7eb; display: flex; justify-content: space-between; }
+                .signature { text-align: center; width: 200px; }
+                .signature-line { margin-top: 60px; border-top: 1px solid #000; padding-top: 5px; }
+              </style>
+            </head>
+            <body>
+              <div class="header">
+                ${settings.logoUrl && !settings.logoUrl.startsWith('https://placehold.co') ? `<img src="${settings.logoUrl}" alt="Logo Musholla" onerror="this.style.display='none'">` : ''}
+                <h1>${settings.name}</h1>
+                <p>${settings.address}</p>
+                <h2>${title}</h2>
+              </div>
+              <div class="info">
+                <p><strong>Tanggal Cetak:</strong> ${new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                <p><strong>Dicetak oleh:</strong> ${currentUser ? currentUser.name : 'Unknown User'}</p>
+              </div>
+              <table>
+                <thead>${tableHeader}</thead>
+                <tbody>${tableRows}</tbody>
+              </table>
+              <div class="footer">
+                <div class="signature"><p>Mengetahui,</p><div class="signature-line">Ketua Takmir</div></div>
+                <div class="signature"><p>Bendahara,</p><div class="signature-line">Bendahara Musholla</div></div>
+              </div>
+            </body>
+            </html>
+          `;
+      };
+      
+      // --- EXPORT KE EXCEL (CSV) ---
+      const handleExportExcel = (type) => {
+        let csvContent = '';
+        const monthName = filter.month ? monthNames[parseInt(filter.month) - 1] : 'Semua Bulan';
+        const yearName = filter.year || new Date().getFullYear().toString();
+        
+        if (type === 'monthly') {
+          csvContent = `${settings.name}\n${settings.address}\nLaporan Keuangan Bulanan - ${monthName} ${yearName}\n\n`;
+          csvContent += 'No,Tanggal,Jenis,Kategori,Pemasukan (Rp),Pengeluaran (Rp),Keterangan\n';
+          
+          filteredTransactions.forEach((t, idx) => {
+            const income = t.type === 'pemasukan' ? t.amount : 0;
+            const expense = t.type === 'pengeluaran' ? t.amount : 0;
+            const description = t.description.replace(/"/g, '""'); // Escape quotes
+            csvContent += `${idx + 1},${t.date},${t.type === 'pemasukan' ? 'Pemasukan' : 'Pengeluaran'},${t.category},${income},${expense},"${description}"\n`;
+          });
+          
+          const totalIncome = filteredTransactions.filter(t => t.type === 'pemasukan').reduce((s, t) => s + t.amount, 0);
+          const totalExpense = filteredTransactions.filter(t => t.type === 'pengeluaran').reduce((s, t) => s + t.amount, 0);
+          const balance = totalIncome - totalExpense;
+          
+          csvContent += `\nTOTAL, , , ,${totalIncome},${totalExpense},\n`;
+          csvContent += `SALDO, , , , , ,${balance}\n`;
+          
+        } else if (type === 'yearly') {
+          csvContent = `${settings.name}\n${settings.address}\nLaporan Keuangan Tahunan - ${yearName}\n\n`;
+          csvContent += 'No,Bulan,Pemasukan (Rp),Pengeluaran (Rp),Saldo (Rp)\n';
+
+          monthlySummary.forEach((m, idx) => {
+            csvContent += `${idx + 1},${monthNames[m.month - 1]},${m.income},${m.expense},${m.balance}\n`;
+          });
+          
+          const totalIncome = monthlySummary.reduce((s, m) => s + m.income, 0);
+          const totalExpense = monthlySummary.reduce((s, m) => s + m.expense, 0);
+          const totalBalance = totalIncome - totalExpense;
+          
+          csvContent += `\nTOTAL, ,${totalIncome},${totalExpense},${totalBalance}\n`;
+        }
+        
+        const finalCsvContent = "data:text/csv;charset=utf-8,\ufeff" + encodeURIComponent(csvContent);
+        const link = document.createElement('a');
+        link.setAttribute('href', finalCsvContent);
+        link.setAttribute('download', `laporan-${type}-${new Date().toISOString().split('T')[0]}.csv`);
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showMessage('Laporan berhasil diexport (CSV).');
+      };
+
+
+      // Modal Component
+      const Modal = ({ show, text, isError }) => {
+          if (!show) return null;
+
+          const baseClasses = "fixed bottom-4 right-4 p-4 rounded-lg shadow-xl text-white font-semibold transition-transform duration-300 transform";
+          const colorClasses = isError ? "bg-red-500" : "bg-emerald-500";
+          const icon = isError ? "❌" : "✅";
+
+          return (
+              <div className={`${baseClasses} ${colorClasses} z-50`}>
+                  <div className="flex items-center gap-2">
+                      <span className="text-xl">{icon}</span>
+                      {text}
+                  </div>
+              </div>
+          );
+      };
+
+      // --- Rendering Logic ---
+
+      if (!currentUser) {
+        // --- TAMPILAN LOADING/LOGIN ---
+        if (!isAuthReady && isLoading) {
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-50 flex flex-col items-center justify-center p-4">
+                    <svg className="animate-spin h-10 w-10 text-emerald-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <p className="mt-4 text-gray-700 font-semibold">Memuat sistem database...</p>
+                </div>
+            );
+        }
+
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-50 flex items-center justify-center p-4">
+            <Modal show={modalMessage.show} text={modalMessage.text} isError={modalMessage.isError} />
+            <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md border-t-4 border-emerald-600">
+              <div className="text-center mb-8">
+                {settings.logoUrl && !settings.logoUrl.startsWith('https://placehold.co') ? (
+                    <img 
+                        src={settings.logoUrl} 
+                        alt="Logo Musholla" 
+                        className="logo-display mx-auto mb-4 shadow-lg border border-gray-100"
+                        onError={(e) => { e.target.onerror = null; e.target.src = defaultSettings.logoUrl }}
+                    />
+                ) : (
+                    <div className="bg-gradient-to-br from-emerald-600 to-teal-600 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
+                        <Home className="w-10 h-10 text-white" />
+                    </div>
+                )}
+                <h1 className="text-3xl font-bold text-gray-800 mb-1">{settings.name}</h1>
+                <p className="text-gray-600 text-sm mb-2">{settings.address}</p>
+                <p className="text-gray-600">Sistem Laporan Keuangan Real-time</p>
+                <p className={`text-xs mt-2 font-medium ${isOnline ? 'text-blue-500' : 'text-red-500'}`}>
+                  Status: {isOnline ? '🌐 Terhubung ke Firestore' : '📴 Mode Offline Lokal'}
+                </p>
+              </div>
+
+              <form onSubmit={handleLogin} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
+                    <User className="w-4 h-4" />
+                    Username
+                  </label>
+                  <input
+                    type="text"
+                    value={loginForm.username}
+                    onChange={(e) => setLoginForm({...loginForm, username: e.target.value})}
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none transition-colors"
+                    placeholder="Masukkan username (admin/user)"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2">
+                    <Lock className="w-4 h-4" />
+                    Password
+                  </label>
+                  <input
+                    type="password"
+                    value={loginForm.password}
+                    onChange={(e) => setLoginForm({...loginForm, password: e.target.value})}
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none transition-colors"
+                    placeholder="Masukkan password"
+                    required
+                  />
+                </div>
+
+                {loginError && (
+                  <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                    {loginError}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 text-white py-3 rounded-lg font-semibold hover:shadow-lg transition-all transform hover:scale-105"
+                >
+                  Login
+                </button>
+              </form>
+            </div>
+          </div>
+        );
+      }
+
+      // --- TAMPILAN UTAMA APLIKASI ---
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-50 p-4 md:p-8">
+          <Modal show={modalMessage.show} text={modalMessage.text} isError={modalMessage.isError} />
+          <div className="max-w-7xl mx-auto">
+            {/* Header / Dashboard Summary */}
+            <div className="bg-white rounded-2xl shadow-xl p-6 md:p-8 mb-6 border-t-4 border-emerald-600 no-print">
+              <div className="flex items-center justify-between flex-wrap gap-4">
+                <div className="flex items-center gap-4">
+                    {settings.logoUrl && !settings.logoUrl.startsWith('https://placehold.co') ? (
+                        <img 
+                            src={settings.logoUrl} 
+                            alt="Logo Musholla" 
+                            className="logo-display shadow-lg border border-gray-100"
+                            onError={(e) => { e.target.onerror = null; e.target.src = defaultSettings.logoUrl }}
+                        />
+                    ) : (
+                        <div className="bg-gradient-to-br from-emerald-600 to-teal-600 p-4 rounded-xl shadow-lg">
+                            <Home className="w-8 h-8 text-white" />
+                        </div>
+                    )}
+                  
+                  <div>
+                    <h1 className="text-3xl md:text-4xl font-bold text-gray-800">{settings.name}</h1>
+                    <p className="text-gray-600 text-sm mt-1 mb-1">{settings.address}</p>
+                    <p className="text-gray-600">Sistem Laporan Keuangan Real-time</p>
+                    <p className={`text-xs font-medium mt-1 ${isOnline ? 'text-blue-600' : 'text-red-600'}`}>
+                        Status Database: **{isOnline ? 'Online (Firestore)' : 'Offline (Local Storage)'}**
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 flex-wrap justify-end">
+                  <div className="bg-gradient-to-r from-emerald-100 to-teal-100 px-6 py-3 rounded-xl">
+                    <p className="text-sm text-gray-600">Saldo Akhir Kumulatif</p>
+                    <p className="text-2xl font-bold text-emerald-700">
+                        {formatCurrency(transactions.filter(t => t.type === 'pemasukan').reduce((s, t) => s + t.amount, 0) - transactions.filter(t => t.type === 'pengeluaran').reduce((s, t) => s + t.amount, 0))}
+                    </p>
+                  </div>
+                  {currentUser.role === 'admin' && (
+                    <div className="flex gap-2 flex-col sm:flex-row">
+                      <button
+                        onClick={handleExportData}
+                        className="flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all"
+                        title="Download Backup Data (JSON)"
+                      >
+                        <Download className="w-4 h-4" />
+                        Backup (JSON)
+                      </button>
+                      <label className="flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all cursor-pointer">
+                        <Upload className="w-4 h-4" />
+                        Restore (JSON)
+                        <input
+                          type="file"
+                          accept=".json"
+                          onChange={handleImportData}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                  )}
+                  <div className="flex flex-col gap-2">
+                    <div className="bg-blue-50 px-4 py-2 rounded-lg text-sm">
+                      <p className="font-semibold text-blue-900">{currentUser.name}</p>
+                      <p className="text-blue-700 text-xs capitalize">
+                        {currentUser.role === 'admin' ? '👑 Admin' : '👤 Pengurus'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleLogout}
+                      className="flex items-center gap-2 justify-center bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      Logout
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Navigation Tabs */}
+            <div className="bg-white rounded-xl shadow-md p-2 mb-6 flex flex-wrap gap-2 no-print">
+              {currentUser.role === 'admin' && (
+                <>
+                  <button
+                    onClick={() => setActiveTab('input')}
+                    className={`flex-1 py-3 px-4 rounded-lg font-semibold transition-all text-center min-w-[120px] ${
+                      activeTab === 'input' 
+                        ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md' 
+                        : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Plus className="w-5 h-5 inline mr-2" />
+                    Input Data
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('settings')}
+                    className={`flex-1 py-3 px-4 rounded-lg font-semibold transition-all text-center min-w-[120px] ${
+                      activeTab === 'settings' 
+                        ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md' 
+                        : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    <Settings className="w-5 h-5 inline mr-2" />
+                    Pengaturan
+                  </button>
+                </>
+              )}
+              <button
+                onClick={() => setActiveTab('monthly')}
+                className={`flex-1 py-3 px-4 rounded-lg font-semibold transition-all text-center min-w-[120px] ${
+                  activeTab === 'monthly' 
+                    ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md' 
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                <Calendar className="w-5 h-5 inline mr-2" />
+                Laporan Bulanan
+              </button>
+              <button
+                onClick={() => setActiveTab('yearly')}
+                className={`flex-1 py-3 px-4 rounded-lg font-semibold transition-all text-center min-w-[120px] ${
+                  activeTab === 'yearly' 
+                    ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md' 
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                <FileText className="w-5 h-5 inline mr-2" />
+                Laporan Tahunan
+              </button>
+            </div>
+
+            {/* Pengaturan Musholla Tab (Admin Only) */}
+            {activeTab === 'settings' && currentUser.role === 'admin' && (
+                <div className="bg-white rounded-xl shadow-lg p-6">
+                    <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+                      <Settings className="w-6 h-6 text-emerald-600" />
+                      Pengaturan Identitas Musholla
+                    </h2>
+                    <form onSubmit={handleSaveSettings} className="space-y-4 max-w-xl mx-auto">
+                      
+                      <div className="flex flex-col items-center justify-center border-b pb-4">
+                          <label className="block text-lg font-semibold text-gray-800 mb-2">Pratinjau Logo Saat Ini</label>
+                          {settingsForm.logoUrl && !settingsForm.logoUrl.startsWith('https://placehold.co') ? (
+                              <img 
+                                  src={settingsForm.logoUrl} 
+                                  alt="Logo Pratinjau" 
+                                  className="w-24 h-24 object-contain rounded-lg border-4 border-gray-200 shadow-md"
+                                  onError={(e) => { e.target.onerror = null; e.target.src = defaultSettings.logoUrl }}
+                              />
+                          ) : (
+                              <div className="w-24 h-24 bg-gray-200 flex items-center justify-center rounded-lg border-4 border-gray-300 text-gray-500 text-xs font-semibold">
+                                  Belum Ada Logo
+                              </div>
+                          )}
+                      </div>
+
+                      <div className="space-y-3">
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Unggah Gambar Logo Baru (Maks 500KB)</label>
+                        <input
+                            type="file"
+                            accept="image/png, image/jpeg, image/webp"
+                            onChange={handleLogoUpload}
+                            className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100"
+                        />
+                        {settingsForm.logoUrl && !settingsForm.logoUrl.startsWith('https://placehold.co') && (
+                            <button
+                                type="button"
+                                onClick={() => setSettingsForm({...settingsForm, logoUrl: defaultSettings.logoUrl})}
+                                className="flex items-center gap-1 text-xs text-red-500 hover:text-red-700 mt-2 font-medium"
+                            >
+                                <Trash2 className="w-3 h-3" /> Hapus/Ganti Logo Saat Ini
+                            </button>
+                        )}
+                        <p className="text-xs text-gray-500 mt-1">Unggah file gambar langsung dari perangkat Anda. File dikonversi ke Base64 (data teks).</p>
+                    </div>
+
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Nama Musholla</label>
+                        <input
+                          type="text"
+                          value={settingsForm.name}
+                          onChange={(e) => setSettingsForm({...settingsForm, name: e.target.value})}
+                          className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none transition-colors"
+                          placeholder="Contoh: Musholla Nurul Falah"
+                          required
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Alamat Musholla</label>
+                        <textarea
+                          value={settingsForm.address}
+                          onChange={(e) => setSettingsForm({...settingsForm, address: e.target.value})}
+                          className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none transition-colors"
+                          rows="3"
+                          placeholder="Contoh: Jl. Contoh Raya No. 12, Kelurahan XYZ, Jakarta"
+                          required
+                        />
+                      </div>
+                      
+                      <button
+                        type="submit"
+                        className={`w-full py-3 rounded-lg font-semibold hover:shadow-xl transition-all transform hover:scale-[1.01] bg-gradient-to-r from-emerald-600 to-teal-600 text-white`}
+                      >
+                        Simpan Pengaturan
+                      </button>
+                    </form>
+                </div>
+            )}
+
+            {/* Input Data Tab (Admin Only) */}
+            {activeTab === 'input' && currentUser.role === 'admin' && (
+              <div className="grid lg:grid-cols-2 gap-6">
+                <div className="bg-white rounded-xl shadow-lg p-6">
+                  <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+                    <Plus className="w-6 h-6 text-emerald-600" />
+                    Tambah Transaksi Baru
+                  </h2>
+                  <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">Tanggal</label>
+                      <input
+                        type="date"
+                        value={formData.date}
+                        onChange={(e) => setFormData({...formData, date: e.target.value})}
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none transition-colors"
+                        required
+                        max={new Date().toISOString().split('T')[0]} // Batasi tanggal hingga hari ini
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">Jenis Transaksi</label>
+                      <select
+                        value={formData.type}
+                        onChange={(e) => setFormData({...formData, type: e.target.value, category: ''})}
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none transition-colors appearance-none"
+                      >
+                        <option value="pemasukan">Pemasukan (Uang Masuk)</option>
+                        <option value="pengeluaran">Pengeluaran (Uang Keluar)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">Kategori</label>
+                      <select
+                        value={formData.category}
+                        onChange={(e) => setFormData({...formData, category: e.target.value})}
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none transition-colors appearance-none"
+                        required
+                      >
+                        <option value="">Pilih Kategori</option>
+                        {categories[formData.type].map(cat => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">Jumlah (Rp)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={formData.amount}
+                        onChange={(e) => setFormData({...formData, amount: e.target.value})}
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none transition-colors"
+                        placeholder="Contoh: 500000"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">Keterangan</label>
+                      <textarea
+                        value={formData.description}
+                        onChange={(e) => setFormData({...formData, description: e.target.value})}
+                        className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none transition-colors"
+                        rows="3"
+                        placeholder="Contoh: Pembelian karpet baru"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      className={`w-full py-3 rounded-lg font-semibold hover:shadow-xl transition-all transform hover:scale-[1.01] bg-gradient-to-r from-emerald-600 to-teal-600 text-white`}
+                    >
+                      {isOnline ? 'Simpan Transaksi Permanen (Online)' : 'Simpan Transaksi Lokal (Offline)'}
+                    </button>
+                  </form>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl shadow-lg p-6 text-white">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-lg font-semibold">Total Pemasukan (Periode Filter)</h3>
+                      <TrendingUp className="w-6 h-6" />
+                    </div>
+                    <p className="text-3xl font-bold">{formatCurrency(summary.income)}</p>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-rose-500 to-pink-600 rounded-xl shadow-lg p-6 text-white">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-lg font-semibold">Total Pengeluaran (Periode Filter)</h3>
+                      <TrendingDown className="w-6 h-6" />
+                    </div>
+                    <p className="text-3xl font-bold">{formatCurrency(summary.expense)}</p>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl shadow-lg p-6 text-white">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-lg font-semibold">Saldo Akhir (Kumulatif Database)</h3>
+                      <DollarSign className="w-6 h-6" />
+                    </div>
+                    <p className="text-3xl font-bold">
+                        {formatCurrency(transactions.filter(t => t.type === 'pemasukan').reduce((s, t) => s + t.amount, 0) - transactions.filter(t => t.type === 'pengeluaran').reduce((s, t) => s + t.amount, 0))}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Laporan Bulanan Tab */}
+            {activeTab === 'monthly' && (
+              <div className="bg-white rounded-xl shadow-lg p-6">
+                <div className="flex flex-wrap items-center justify-between gap-4 mb-6 no-print">
+                  <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                    <Calendar className="w-6 h-6 text-emerald-600" />
+                    Laporan Transaksi Bulanan
+                  </h2>
+                  <div className="flex gap-2 flex-wrap justify-end">
+                    <select
+                      value={filter.month}
+                      onChange={(e) => setFilter({...filter, month: e.target.value})}
+                      className="px-4 py-2 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none appearance-none"
+                    >
+                      <option value="">Semua Bulan</option>
+                      {monthNames.map((month, idx) => (
+                        <option key={idx} value={idx + 1}>{month}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={filter.year}
+                      onChange={(e) => setFilter({...filter, year: e.target.value})}
+                      className="px-4 py-2 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none appearance-none"
+                    >
+                       {allYears.map(y => (
+                            <option key={y} value={y}>{y}</option>
+                        ))}
+                    </select>
+                    <button
+                      onClick={() => handlePrint('monthly')}
+                      className="flex items-center gap-2 bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all"
+                    >
+                      <Printer className="w-4 h-4" />
+                      Cetak
+                    </button>
+                    <button
+                      onClick={() => handleExportExcel('monthly')}
+                      className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all"
+                    >
+                      <FileDown className="w-4 h-4" />
+                      Excel (CSV)
+                    </button>
+                  </div>
+                </div>
+                
+                {isLoading ? (
+                    <div className="text-center py-10 text-gray-500 italic">Memuat data...</div>
+                ) : (
+                    <div className="overflow-x-auto rounded-lg border border-gray-200 table-container">
+                    <table className="w-full">
+                        <thead>
+                        <tr className="bg-gradient-to-r from-emerald-100 to-teal-100 sticky top-0 shadow-sm">
+                            <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Tanggal</th>
+                            <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Jenis</th>
+                            <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Kategori</th>
+                            <th className="px-4 py-3 text-right text-sm font-semibold text-gray-700">Jumlah</th>
+                            <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Keterangan</th>
+                            {currentUser.role === 'admin' && (
+                            <th className="px-4 py-3 text-center text-sm font-semibold text-gray-700 no-print">Aksi</th>
+                            )}
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {filteredTransactions.length === 0 ? (
+                            <tr>
+                                <td colSpan={6} className="text-center py-6 text-gray-500 italic">
+                                    Tidak ada data transaksi untuk periode ini.
+                                </td>
+                            </tr>
+                        ) : (
+                            filteredTransactions.map((t, idx) => (
+                                <tr key={t.id} className={`border-b ${idx % 2 === 0 ? 'bg-gray-50' : 'bg-white'} hover:bg-emerald-50 transition-colors`}>
+                                <td className="px-4 py-3 text-sm text-gray-700">
+                                    {new Date(t.date).toLocaleDateString('id-ID')}
+                                </td>
+                                <td className="px-4 py-3">
+                                    <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                                    t.type === 'pemasukan' 
+                                        ? 'bg-emerald-100 text-emerald-700' 
+                                        : 'bg-rose-100 text-rose-700'
+                                    }`}>
+                                    {t.type === 'pemasukan' ? 'Masuk' : 'Keluar'}
+                                    </span>
+                                </td>
+                                <td className="px-4 py-3 text-sm text-gray-700">{t.category}</td>
+                                <td className={`px-4 py-3 text-right text-sm font-semibold ${
+                                    t.type === 'pemasukan' ? 'text-emerald-600' : 'text-rose-600'
+                                }`}>
+                                    {formatCurrency(t.amount)}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-gray-600 max-w-xs truncate">{t.description}</td>
+                                {currentUser.role === 'admin' && (
+                                    <td className="px-4 py-3 text-center no-print">
+                                    <button
+                                        onClick={() => handleDelete(t.id)}
+                                        className={`text-rose-600 hover:text-rose-800 transition-colors p-1 rounded-full hover:bg-rose-100`}
+                                        title="Hapus Transaksi Permanen"
+                                    >
+                                        <Trash2 className="w-4 h-4 inline" />
+                                    </button>
+                                    </td>
+                                )}
+                                </tr>
+                            ))
+                        )}
+                        </tbody>
+                        <tfoot className="sticky bottom-0">
+                            <tr className="bg-emerald-300 font-bold">
+                                <td colSpan={3} className="px-4 py-3 text-sm text-gray-800 text-center">RINGKASAN BULANAN INI</td>
+                                <td className="px-4 py-3 text-right text-sm text-emerald-800">
+                                    {formatCurrency(summary.income)}
+                                </td>
+                                <td colSpan={2} className="px-4 py-3 text-right text-sm text-rose-800">
+                                    {formatCurrency(summary.expense)}
+                                </td>
+                            </tr>
+                            <tr className="bg-blue-300 font-bold">
+                                <td colSpan={3} className="px-4 py-3 text-sm text-gray-800 text-center">SALDO AKHIR PERIODE INI</td>
+                                <td colSpan={3} className={`px-4 py-3 text-right text-sm ${summary.balance >= 0 ? 'text-blue-800' : 'text-red-800'}`}>
+                                    {formatCurrency(summary.balance)}
+                                </td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                    </div>
+                )}
+              </div>
+            )}
+
+            {/* Laporan Tahunan Tab */}
+            {activeTab === 'yearly' && (
+              <div className="bg-white rounded-xl shadow-lg p-6">
+                <div className="flex items-center justify-between mb-6 flex-wrap gap-4 no-print">
+                  <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                    <FileText className="w-6 h-6 text-emerald-600" />
+                    Laporan Tahunan
+                  </h2>
+                  <div className="flex gap-2 justify-end flex-wrap">
+                    <select
+                      value={filter.year}
+                      onChange={(e) => setFilter({...filter, year: e.target.value})}
+                      className="px-4 py-2 border-2 border-gray-200 rounded-lg focus:border-emerald-500 focus:outline-none appearance-none"
+                    >
+                      {allYears.map(y => (
+                            <option key={y} value={y}>{y}</option>
+                        ))}
+                    </select>
+                    <button
+                      onClick={() => handlePrint('yearly')}
+                      className="flex items-center gap-2 bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all"
+                    >
+                      <Printer className="w-4 h-4" />
+                      Cetak
+                    </button>
+                    <button
+                      onClick={() => handleExportExcel('yearly')}
+                      className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-all"
+                    >
+                      <FileDown className="w-4 h-4" />
+                      Excel (CSV)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto rounded-lg border border-gray-200">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="bg-gradient-to-r from-emerald-100 to-teal-100">
+                        <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Bulan</th>
+                        <th className="px-4 py-3 text-right text-sm font-semibold text-gray-700">Pemasukan</th>
+                        <th className="px-4 py-3 text-right text-sm font-semibold text-gray-700">Pengeluaran</th>
+                        <th className="px-4 py-3 text-right text-sm font-semibold text-gray-700">Saldo</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {monthlySummary.map((m, idx) => (
+                        <tr key={m.month} className={`border-b ${idx % 2 === 0 ? 'bg-gray-50' : 'bg-white'} hover:bg-emerald-50 transition-colors`}>
+                          <td className="px-4 py-3 text-sm font-semibold text-gray-700">{monthNames[m.month - 1]}</td>
+                          <td className="px-4 py-3 text-right text-sm font-semibold text-emerald-600">
+                            {formatCurrency(m.income)}
+                          </td>
+                          <td className="px-4 py-3 text-right text-sm font-semibold text-rose-600">
+                            {formatCurrency(m.expense)}
+                          </td>
+                          <td className={`px-4 py-3 text-right text-sm font-bold ${
+                            m.balance >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                          }`}>
+                            {formatCurrency(m.balance)}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="bg-gradient-to-r from-emerald-200 to-teal-200 font-bold">
+                        <td className="px-4 py-3 text-sm text-gray-800">TOTAL TAHUN {filter.year}</td>
+                        <td className="px-4 py-3 text-right text-sm text-emerald-700">
+                          {formatCurrency(monthlySummary.reduce((s, m) => s + m.income, 0))}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm text-rose-700">
+                          {formatCurrency(monthlySummary.reduce((s, m) => s + m.expense, 0))}
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm text-gray-800">
+                          {formatCurrency(monthlySummary.reduce((s, m) => s + m.balance, 0))}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+
+    const App = () => (
+        <FinanceApp />
+    );
+    
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
